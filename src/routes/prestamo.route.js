@@ -2,16 +2,35 @@ import express from "express";
 import Prestamo from "../models/Prestamo.js";
 import Cliente from "../models/Cliente.js";
 import Garantia from "../models/Garantia.js";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+import Pago from "../models/Pago.js";
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const dir = "uploads/evidencia_prestamos";
+    if (!fs.existsSync(dir)){
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    cb(null, dir);
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + path.extname(file.originalname));
+  }
+});
+const upload = multer({ storage: storage });
 
 const router = express.Router();
 
 /* =========================
    CREAR PRÉSTAMO
 ========================= */
-router.post("/", async (req, res) => {
+router.post("/", upload.single("imagen_evidencia"), async (req, res) => {
   try {
 
     console.log("BODY RECIBIDO:", req.body); // DEBUG
+    console.log("FILE RECIBIDO:", req.file); // DEBUG
 
     if (!req.body) {
       return res.status(400).json({
@@ -46,13 +65,26 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "Esta garantía pertenece a otro cliente y no puede ser usada." });
     }
 
-    const prestamo = await Prestamo.create(req.body);
+    const prestamoData = { ...req.body };
+    
+    if (req.file) {
+      // Guardar ruta relativa de la imagen para que el frontend pueda cargarla con /uploads/evidencia_prestamos/...
+      prestamoData.imagen_evidencia = req.file.path.replace(/\\/g, "/");
+    }
+
+    const prestamo = await Prestamo.create(prestamoData);
 
     // 🔴 ACTUALIZAR ESTADO DE LA GARANTÍA
-    await Garantia.findByIdAndUpdate(garantia_id, {
+    const garantiaUpdate = {
       estado_inventario: "Prestado",
       cliente_id: cliente_id
-    });
+    };
+
+    if (prestamoData.imagen_evidencia) {
+      garantiaUpdate.imagen_evidencia = prestamoData.imagen_evidencia;
+    }
+
+    await Garantia.findByIdAndUpdate(garantia_id, garantiaUpdate);
 
     res.status(201).json(prestamo);
 
@@ -72,7 +104,7 @@ router.get("/", async (req, res) => {
 
     const prestamos = await Prestamo.find()
       .populate("cliente_id", "nombres apellidos dni universidad")
-      .populate("garantia_id", "tipo marca modelo serie");
+      .populate("garantia_id", "tipo marca modelo serie estado_fisico valor_estimado imagen_evidencia");
 
     const hoy = new Date();
 
@@ -80,22 +112,59 @@ router.get("/", async (req, res) => {
 
       let dias_atraso = 0;
       let monto_mora = 0;
+      let estado_actual = prestamo.estado;
+      
+      const prestamoObj = prestamo.toObject();
 
-      if (prestamo.fecha_vencimiento < hoy && prestamo.estado === "activo") {
-        const hoyUtc = Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
-        const vencUtc = Date.UTC(prestamo.fecha_vencimiento.getFullYear(), prestamo.fecha_vencimiento.getMonth(), prestamo.fecha_vencimiento.getDate());
+      // Prefix URLs
+      if (prestamoObj.imagen_evidencia && !prestamoObj.imagen_evidencia.startsWith("http")) {
+        prestamoObj.imagen_evidencia = `http://localhost:4000/${prestamoObj.imagen_evidencia}`;
+      }
+      if (prestamoObj.garantia_id && prestamoObj.garantia_id.imagen_evidencia && !prestamoObj.garantia_id.imagen_evidencia.startsWith("http")) {
+        prestamoObj.garantia_id.imagen_evidencia = `http://localhost:4000/${prestamoObj.garantia_id.imagen_evidencia}`;
+      }
 
-        dias_atraso = Math.floor(
-          (hoyUtc - vencUtc) / (1000 * 60 * 60 * 24)
-        );
-        
-        if (dias_atraso < 0) dias_atraso = 0;
+      const hoyUtc = Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
 
-        monto_mora = dias_atraso * 2; // S/2 por día
+      if (prestamoObj.cuotas && prestamoObj.cuotas.length > 0) {
+        // Nueva lógica con cuotas
+        prestamoObj.cuotas.forEach(cuota => {
+          if (cuota.estado === "pendiente" || cuota.estado === "parcial") {
+            const fechaVenc = new Date(cuota.fecha_vencimiento);
+            const vencUtc = Date.UTC(fechaVenc.getFullYear(), fechaVenc.getMonth(), fechaVenc.getDate());
+            
+            const atraso = Math.floor((hoyUtc - vencUtc) / (1000 * 60 * 60 * 24));
+            
+            if (atraso > 0) {
+              cuota.mora_generada = atraso * 2; // S/2 por día
+              monto_mora += cuota.mora_generada;
+              if (atraso > dias_atraso) dias_atraso = atraso;
+            } else {
+              cuota.mora_generada = 0;
+            }
+          }
+        });
+
+      } else {
+        // Lógica antigua (fallback)
+        if (prestamo.fecha_vencimiento < hoy && prestamo.estado === "activo") {
+          const vencUtc = Date.UTC(prestamo.fecha_vencimiento.getFullYear(), prestamo.fecha_vencimiento.getMonth(), prestamo.fecha_vencimiento.getDate());
+  
+          dias_atraso = Math.floor((hoyUtc - vencUtc) / (1000 * 60 * 60 * 24));
+          if (dias_atraso < 0) dias_atraso = 0;
+  
+          monto_mora = dias_atraso * 2;
+        }
+      }
+
+      // Actualizar estado dinámicamente para la vista
+      if (prestamo.estado === "activo" && dias_atraso > 0) {
+        estado_actual = "en_mora";
       }
 
       return {
-        ...prestamo.toObject(),
+        ...prestamoObj,
+        estado: estado_actual,
         dias_atraso,
         monto_mora
       };
@@ -295,6 +364,54 @@ router.get("/por-vencer", async (req, res) => {
     .limit(5);
 
   res.json(prestamos);
+});
+
+/* =========================
+   CONSULTA POR DNI (Para Flutter/App)
+   Ruta: GET /prestamo/dni/:dni
+========================= */
+router.get("/dni/:dni", async (req, res) => {
+  try {
+    const { dni } = req.params;
+
+    // 1. Buscar al cliente por DNI
+    const cliente = await Cliente.findOne({ dni: dni });
+    
+    if (!cliente) {
+      return res.status(404).json({ message: "Cliente no encontrado" });
+    }
+
+    // 2. Buscar el préstamo usando el cliente_id
+    // Se asume que se busca el préstamo más reciente o activo
+    const prestamo = await Prestamo.findOne({ cliente_id: cliente._id })
+      .sort({ createdAt: -1 }); // Opcional: obtener el último
+
+    if (!prestamo) {
+      return res.status(404).json({ message: "No hay préstamos activos para este cliente" });
+    }
+
+    const pagos = await Pago.find({ prestamo_id: prestamo._id })
+    .sort({ createdAt: -1 }); // Opcional: obtener el último
+    if (!pagos) {
+      return res.status(404).json({ message: "No hay pagos para este préstamo" });
+    }
+
+    // 3. Responder con la estructura que Flutter espera
+    return res.json({
+      _id: prestamo._id,
+      nombre_cliente: `${cliente.nombres} ${cliente.apellidos}`,
+      monto_total: prestamo.monto_total,
+      saldo_pendiente: prestamo.saldo_pendiente,
+      cuotas: prestamo.cuotas, 
+      codigo_prestamo: prestamo.codigo_prestamo,
+      fecha_pago: pagos.fecha_pago,
+      medio_pago: pagos.medio_pago,
+    });
+
+  } catch (error) {
+    console.error("Error en API /dni:", error);
+    return res.status(500).json({ error: "Error interno del servidor" });
+  }
 });
 
 export default router;

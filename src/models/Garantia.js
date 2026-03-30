@@ -5,7 +5,6 @@ const GarantiaSchema = new mongoose.Schema(
     tipo: {
       type: String,
       required: true,
-      enum: ["Laptop", "Celular", "Tablet", "Monitor", "Consola", "Otro"],
       trim: true
     },
 
@@ -24,10 +23,9 @@ const GarantiaSchema = new mongoose.Schema(
     serie: {
       type: String,
       required: true,
-      unique: true,
       trim: true
     },
-
+    
     estado_fisico: {
       type: String,
       enum: ["Excelente", "Bueno", "Regular", "Malo"],
@@ -43,6 +41,11 @@ const GarantiaSchema = new mongoose.Schema(
     accesorios: {
       type: [String],
       default: []
+    },
+
+    imagen_evidencia: {
+      type: String,
+      default: ""
     },
 
     observaciones: {

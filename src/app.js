@@ -1,5 +1,4 @@
 import express from "express";
-import dotenv from "dotenv";
 import cors from "cors";
 import {connectDB} from "./config/db.js";
 import clienteRoutes from "./routes/cliente.route.js";
@@ -9,8 +8,7 @@ import garantiaRoutes from "./routes/garantia.route.js";
 import pagoRoutes from "./routes/pago.route.js";
 import prestamoRoutes from "./routes/prestamo.route.js";
 import metricsRoutes from "./routes/metrics.route.js";
-
-dotenv.config();
+import reporteRoutes from "./routes/reporte.route.js";
 
 const app = express();
 
@@ -38,6 +36,7 @@ app.use("/garantia", garantiaRoutes);
 app.use("/prestamo", prestamoRoutes);
 app.use("/pago", pagoRoutes);
 app.use("/metrics", metricsRoutes);
+app.use("/reporte", reporteRoutes);
 
 export default app;
 

@@ -30,12 +30,35 @@ const prestamoSchema = new mongoose.Schema(
     required: true
   },
 
-  plazo_dias: {
+  numero_cuotas: {
     type: Number,
-    required: true
+    min: 5,
+    max: 12,
+    default: 5
   },
 
+  frecuencia_pago: {
+    type: String,
+    enum: ["diario", "semanal", "quincenal", "mensual"],
+    default: "mensual"
+  },
+  
   monto_total: Number,
+
+  cuotas: [
+    {
+      numero: Number,
+      monto_cuota: Number,
+      fecha_vencimiento: Date,
+      estado: {
+        type: String,
+        enum: ["pendiente", "pagado", "parcial"],
+        default: "pendiente"
+      },
+      monto_pagado: { type: Number, default: 0 },
+      mora_generada: { type: Number, default: 0 }
+    }
+  ],
 
   interes_generado: {
     type: Number,
@@ -104,10 +127,36 @@ prestamoSchema.pre("save", async function () {
     this.monto_total =
       this.monto_prestado + this.interes_generado;
 
-    // vencimiento
     const fecha = new Date(this.fecha_inicio);
-    fecha.setDate(fecha.getDate() + this.plazo_dias);
+    
+    // Calcular plazo aproximado para la fecha final
+    let diasIncremento = 30;
+    if (this.frecuencia_pago === "diario") diasIncremento = 1;
+    else if (this.frecuencia_pago === "semanal") diasIncremento = 7;
+    else if (this.frecuencia_pago === "quincenal") diasIncremento = 15;
+    
+    fecha.setDate(fecha.getDate() + (this.numero_cuotas * diasIncremento));
     this.fecha_vencimiento = fecha;
+
+    // Crear arreglo de cuotas
+    if (!this.cuotas || this.cuotas.length === 0) {
+      const cuotasArray = [];
+      const montoPorCuota = this.monto_total / this.numero_cuotas;
+      
+      let curFecha = new Date(this.fecha_inicio);
+      for (let i = 1; i <= this.numero_cuotas; i++) {
+        curFecha.setDate(curFecha.getDate() + diasIncremento);
+        cuotasArray.push({
+          numero: i,
+          monto_cuota: montoPorCuota,
+          fecha_vencimiento: new Date(curFecha),
+          estado: "pendiente",
+          monto_pagado: 0,
+          mora_generada: 0
+        });
+      }
+      this.cuotas = cuotasArray;
+    }
 
     // saldo inicial
     this.saldo_pendiente = this.monto_total;

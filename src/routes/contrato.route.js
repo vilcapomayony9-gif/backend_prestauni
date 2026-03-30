@@ -1,5 +1,7 @@
 import express from "express";
 import { generarContratoPDF } from "../utils/generarContratoPDF.js";
+import { enviarEmail } from "../utils/mailer.js";
+import path from "path";
 import Contrato from "../models/Contrato.js";
 import Prestamo from "../models/Prestamo.js";
 
@@ -39,6 +41,31 @@ router.post("/", async (req, res) => {
     // Guardar ruta del PDF
     contrato.archivo_pdf = pdfUrl;
     await contrato.save();
+
+    // --- ENVIAR EMAIL AL CLIENTE ---
+    if (prestamo.cliente_id.email) {
+      const adjuntoPath = path.resolve(rutaPDF);
+      enviarEmail({
+        to: prestamo.cliente_id.email,
+        subject: `Tu Contrato de Préstamo PRESTUNI - N° ${numero_contrato}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; color: #333;">
+            <h2 style="color: #1E3A8A;">¡Hola ${prestamo.cliente_id.nombres}!</h2>
+            <p>Se ha generado correctamente tu contrato de préstamo con <b>PRESTUNI</b>.</p>
+            <p>Adjunto a este correo encontrarás una copia de tu contrato en formato PDF para tu registro.</p>
+            <br/>
+            <p>Atentamente,</p>
+            <p><b>El equipo de PRESTUNI</b></p>
+          </div>
+        `,
+        attachments: [
+          {
+            filename: `Contrato_${numero_contrato}.pdf`,
+            path: adjuntoPath
+          }
+        ]
+      });
+    }
 
     res.status(201).json({
       message: "Contrato creado y PDF generado",
@@ -179,6 +206,77 @@ router.delete("/:id", async (req, res) => {
   } catch (error) {
     res.status(400).json({
       message: "Error al eliminar contrato",
+      error: error.message
+    });
+  }
+});
+
+/* =========================
+   ENVIAR CONTRATO POR EMAIL
+========================= */
+router.post("/:id/enviar-email", async (req, res) => {
+  try {
+    const contrato = await Contrato.findById(req.params.id)
+      .populate({
+        path: "prestamo_id",
+        populate: [
+          { path: "cliente_id" },
+          { path: "garantia_id" }
+        ]
+      });
+
+    if (!contrato) {
+      return res.status(404).json({ message: "Contrato no encontrado" });
+    }
+
+    const { prestamo_id: prestamo } = contrato;
+    const { cliente_id: cliente } = prestamo;
+
+    if (!cliente.email) {
+      return res.status(400).json({ message: "El cliente no tiene un correo electrónico registrado" });
+    }
+
+    if (!contrato.archivo_pdf) {
+      return res.status(400).json({ message: "El contrato no tiene un archivo PDF generado" });
+    }
+
+    // Extraer la ruta local del archivo desde la URL si es necesario
+    // La URL es http://localhost:4000/uploads/contratos/pdf-123.pdf
+    // La ruta relativa es uploads/contratos/pdf-123.pdf
+    let rutaRelativa = contrato.archivo_pdf;
+    if (rutaRelativa.startsWith("http")) {
+      const urlPartes = rutaRelativa.split("/");
+      rutaRelativa = urlPartes.slice(3).join("/");
+    }
+
+    const adjuntoPath = path.resolve(rutaRelativa);
+
+    await enviarEmail({
+      to: cliente.email,
+      subject: `Tu Contrato de Préstamo PRESTUNI - N° ${contrato.numero_contrato}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; color: #333;">
+          <h2 style="color: #1E3A8A;">¡Hola ${cliente.nombres}!</h2>
+          <p>Se ha generado correctamente tu contrato de préstamo con <b>PRESTUNI</b>.</p>
+          <p>Adjunto a este correo encontrarás una copia de tu contrato en formato PDF para tu registro.</p>
+          <br/>
+          <p>Atentamente,</p>
+          <p><b>El equipo de PRESTUNI</b></p>
+        </div>
+      `,
+      attachments: [
+        {
+          filename: `Contrato_${contrato.numero_contrato}.pdf`,
+          path: adjuntoPath
+        }
+      ]
+    });
+
+    res.json({ message: "Email enviado correctamente" });
+
+  } catch (error) {
+    res.status(500).json({
+      message: "Error al enviar el email",
       error: error.message
     });
   }
